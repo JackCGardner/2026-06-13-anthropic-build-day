@@ -30,6 +30,12 @@ export type {
   BashToolResult,
   CreateBashToolOptions,
 } from "./bash-tool.js";
+export { runSweepInProcess } from "./run-sweep-inprocess.js";
+export type {
+  SweepResult,
+  SweepVersionResult,
+  SweepFixtureResult,
+} from "./run-sweep-inprocess.js";
 export { createEgressGateway, resolveToolId, SANDBOX_TAG_HEADER, SANDBOX_TAG_ENV } from "./gateway.js";
 export type {
   EgressGateway,
