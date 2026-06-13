@@ -68,6 +68,75 @@ The keyless scripted proof is: npm run sweep / npm run sweep:bash.
 Flags: `--traces <dir>` overrides the trace output directory, `--max-turns <n>`
 caps the agent turns per fixture.
 
+## Run the live Vercel Sandbox sweep (needs Vercel auth + a deployed gateway)
+
+```bash
+npm run sweep:sandbox
+```
+
+`sweep:sandbox` runs the same Refund Trap thesis as `sweep:bash`, but every tool
+call executes inside a real ephemeral Vercel Sandbox microVM behind the identical
+`BashSubstrate` seam. Its outbound HTTP reaches the deployed egress route instead
+of a localhost gateway: in M0 the microVM's `HTTPS_PROXY` points at a publicly
+reachable gateway URL; in M1 the firewall's per-domain `forwardURL` points at the
+deployed `defineSandboxProxy` route (`app/api/egress/[[...path]]`). Either way the
+same shared egress core dispatches into the scoped kernels and moves the hidden
+money.
+
+Because a real microVM is off-box, this path needs BOTH a Vercel credential AND a
+publicly reachable gateway URL:
+
+- Vercel auth: set `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN` together with
+  `VERCEL_PROJECT_ID` and `VERCEL_TEAM_ID`.
+- `GATEWAY_PUBLIC_URL`: the publicly reachable base URL of your deployed gateway
+  (a `127.0.0.1` / `localhost` value is rejected, since the microVM cannot reach
+  the runner's loopback).
+
+With either absent it prints a pointer to the keyless and live-model proofs and
+exits 0 WITHOUT creating a sandbox or touching the network:
+
+```
+sweep:sandbox needs Vercel auth (VERCEL_TOKEN/OIDC) and a deployed gateway URL
+(GATEWAY_PUBLIC_URL). The keyless proofs are: npm run sweep / npm run sweep:bash;
+the live model path is sweep:live.
+```
+
+Flags: `--mode M0|M1` selects the egress transport (default `M0`), `--traces
+<dir>` overrides the trace output directory.
+
+### Deploying the egress gateway route
+
+The forwardURL transport (M1) targets the Next.js route handler at
+`app/api/egress/[[...path]]/route.ts`. Deploy this app to Vercel
+(`vercel deploy --prod`), then:
+
+- Point `GATEWAY_PUBLIC_URL` at the deployment, e.g.
+  `https://<your-app>.vercel.app`.
+- Set `SYNTH_EGRESS_FORWARD_URL` on the deployment to the public URL of the route
+  (`https://<your-app>.vercel.app/api/egress`); the route validates the
+  `vercel-sandbox-oidc-token` audience against it.
+- The World Runner that owns the seeded worlds calls
+  `egressBindingStore.configure({ resolveWorld, trace })` once at startup and
+  `bind` / `unbind` per fixture, keyed by the OIDC `sandbox_id`.
+
+The M0 transport only needs `GATEWAY_PUBLIC_URL` to be a publicly reachable
+gateway; the route still serves both transports through the one shared core.
+
+## Run matrix
+
+| Command | What it proves | Credentials |
+| --- | --- | --- |
+| `npm run sweep` | In-process keyless thesis: v1 $5,140 / Trust 38, v2 $0 / Trust 91, both 100% | none |
+| `npm run sweep:bash` | Same numbers over a real shell + HTTP + local gateway process | none |
+| `npm run dev` | The evidence-viewer UI rendering the keyless sweep | none |
+| `npm run sweep:live` | The agent under test driven by a real model through the Claude Agent SDK | `ANTHROPIC_API_KEY` (or a Claude Code login) |
+| `npm run sweep:sandbox` | Same numbers over real Vercel Sandbox microVMs against the deployed egress route | Vercel auth (`VERCEL_TOKEN` / `VERCEL_OIDC_TOKEN`) + `GATEWAY_PUBLIC_URL` |
+
+`sweep`, `sweep:bash`, and `npm run dev` are fully keyless. `sweep:live` is the
+only path that calls a model. `sweep:sandbox` is the only path that provisions
+real microVMs. Each gated path prints a friendly pointer and exits 0 when its
+credentials are absent, so the whole matrix is safe to run keyless.
+
 Other useful scripts:
 
 ```bash

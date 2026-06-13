@@ -43,3 +43,53 @@ export type {
   GatewayTraceWriter,
   WorldResolver,
 } from "./gateway.js";
+export {
+  handleEgress,
+  decodeBody,
+  stripObservabilityHeaders,
+  JSON_HEADERS,
+} from "./egress-core.js";
+export type {
+  HandleEgressInput,
+  NormalizedRequest,
+  WireResponse,
+  SandboxBinding,
+  EgressTraceWriter,
+} from "./egress-core.js";
+export {
+  egressBindingStore,
+  createEgressBindingStore,
+} from "./egress-binding-store.js";
+export type { EgressBindingStore } from "./egress-binding-store.js";
+export {
+  verifySandboxProxyRequest,
+  SandboxProxyUnavailableError,
+} from "./sandbox-proxy.js";
+export type {
+  SandboxProxyIdentity,
+  SandboxProxyForwarded,
+  SandboxProxyVerification,
+} from "./sandbox-proxy.js";
+export {
+  VercelBashSubstrate,
+  createVercelBashSubstrate,
+  readVercelAuthFromEnv,
+  buildCreateConfig,
+  MissingVercelAuthError,
+  VERCEL_OIDC_TOKEN_ENV,
+  VERCEL_TOKEN_ENV,
+  VERCEL_PROJECT_ID_ENV,
+  VERCEL_TEAM_ID_ENV,
+} from "./bash-vercel.js";
+export type {
+  VercelBashSubstrateOptions,
+  VercelGatewayBinding,
+  VercelSeedFile,
+  VercelBashResult,
+  VercelAuth,
+  EgressMode,
+  ToolHostRoute,
+  SandboxCreateConfig,
+  SandboxNetworkPolicy,
+  NetworkPolicyAllowEntry,
+} from "./bash-vercel.js";
