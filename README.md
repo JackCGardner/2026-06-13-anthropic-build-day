@@ -142,7 +142,7 @@ Other useful scripts:
 ```bash
 npm run typecheck   # tsc --noEmit, strict
 npm test            # vitest run
-npm run dev         # the evidence-viewer placeholder (real UI is a later milestone)
+npm run dev         # the evidence-viewer UI at http://localhost:3000
 ```
 
 Requires Node 22 or newer locally.
