@@ -13,3 +13,27 @@ export {
   scriptedHarnessV1,
   scriptedHarnessV2,
 } from "./scripted-harness.js";
+export {
+  LocalBashSubstrate,
+  createLocalBashSubstrate,
+} from "./bash-local.js";
+export type {
+  GatewayBinding,
+  LocalBashSubstrateOptions,
+  SeedFile,
+  BashResult,
+} from "./bash-local.js";
+export { createBashTool } from "./bash-tool.js";
+export type {
+  BashTool,
+  BashToolInput,
+  BashToolResult,
+  CreateBashToolOptions,
+} from "./bash-tool.js";
+export { createEgressGateway, resolveToolId, SANDBOX_TAG_HEADER, SANDBOX_TAG_ENV } from "./gateway.js";
+export type {
+  EgressGateway,
+  CreateEgressGatewayOptions,
+  GatewayTraceWriter,
+  WorldResolver,
+} from "./gateway.js";

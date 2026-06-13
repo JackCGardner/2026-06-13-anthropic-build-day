@@ -12,7 +12,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "sweep": "tsx scripts/sweep.ts"
+    "sweep": "tsx scripts/sweep.ts",
+    "sweep:bash": "tsx scripts/sweep-bash.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.13",
