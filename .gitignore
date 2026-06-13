@@ -33,3 +33,4 @@ coverage/
 .idea/
 .vscode/
 traces-bash/
+traces-live/

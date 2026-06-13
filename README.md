@@ -36,6 +36,38 @@ headline numbers: technical-pass flat at 100%, Cash Burned about $5,140 falling
 to $0, and Trust Score climbing from about 38 to about 91, all against the
 identical synthetic world.
 
+```bash
+npm run sweep:bash   # same numbers, every tool call over a real shell + HTTP + gateway process
+```
+
+`sweep:bash` proves the egress seam end to end: the scripted harness's tool calls
+travel a real shell command (curl) and a real process boundary to the gateway, and
+the dashboard numbers survive unchanged. Both `sweep` and `sweep:bash` are fully
+keyless.
+
+## Run the live sweep (needs a key)
+
+```bash
+npm run sweep:live
+```
+
+`sweep:live` is the only path that calls a model. It drives the agent under test
+through the Claude Agent SDK: the model is given a single bash tool over an
+in-process MCP server, runs its own shell commands across the same bash substrate
+and egress gateway as `sweep:bash`, and the same Judge scores the resulting trace.
+
+It needs a model credential. Set `ANTHROPIC_API_KEY` (or run inside an
+authenticated Claude Code session). With no credential present it prints a pointer
+to the keyless proofs and exits 0 without calling the API:
+
+```
+Live harness needs ANTHROPIC_API_KEY or a Claude Code login.
+The keyless scripted proof is: npm run sweep / npm run sweep:bash.
+```
+
+Flags: `--traces <dir>` overrides the trace output directory, `--max-turns <n>`
+caps the agent turns per fixture.
+
 Other useful scripts:
 
 ```bash
