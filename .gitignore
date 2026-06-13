@@ -17,6 +17,17 @@ node_modules/
 dist/
 build/
 
+# Generated sweep artifacts
+traces/
+
+# Next.js / TypeScript / tooling
+.next/
+out/
+.env*
+*.log
+coverage/
+*.tsbuildinfo
+
 # OS/editor
 .DS_Store
 .idea/

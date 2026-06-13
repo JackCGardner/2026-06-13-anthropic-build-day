@@ -10,6 +10,42 @@ Synthetic Harness Lab is a hackathon prototype for agent-generated coding
 harnesses that can be evaluated and improved inside synthetic sandboxes before
 they are trusted in the real world.
 
+This repository is a single TypeScript Next.js (App Router) application. It pairs
+a deterministic engine (synthetic tool kernels, a trace store, and a judge that
+is pure functions over the trace plus ground truth) with a scenario pack format.
+The flagship pack is the Refund Trap, where a harness handed a faithful payments
+API issues technically valid but policy-violating refunds: every call returns
+200, every ticket is marked solved, technical-pass stays pinned at 100%, and
+money walks out the door. The synthetic world is what makes that gap visible,
+attributable, and replayable.
+
+## Run the keyless sweep
+
+The first milestone is fully keyless: no Anthropic or Vercel credentials are
+needed to build or run it. A scripted, deterministic stand-in issues the same
+tool calls a naive v1 and a tightened v2 harness would, so the whole pipeline
+(kernels, world runner, judge) runs end to end with no model in the loop.
+
+```bash
+npm install
+npm run sweep
+```
+
+The sweep runs both harness versions across the refund fixtures and prints the
+headline numbers: technical-pass flat at 100%, Cash Burned about $5,140 falling
+to $0, and Trust Score climbing from about 38 to about 91, all against the
+identical synthetic world.
+
+Other useful scripts:
+
+```bash
+npm run typecheck   # tsc --noEmit, strict
+npm test            # vitest run
+npm run dev         # the evidence-viewer placeholder (real UI is a later milestone)
+```
+
+Requires Node 22 or newer locally.
+
 ## Vision
 
 A user describes a problem. Instead of hand-writing the full agent workflow, an
