@@ -79,6 +79,34 @@ export function createBashTool(options: CreateBashToolOptions): BashTool {
     };
 
     const commandLine = composeCommandLine(input.cmd, input.args);
+
+    // An empty command is a caller error, not a shell to run: record the faulty
+    // invocation faithfully on the trace and return a non-zero result rather than
+    // spawning a no-op shell that would leave an empty command in the trace.
+    if (commandLine.trim().length === 0) {
+      const spanId = `sh_${world.fixtureId}_empty`;
+      const invocationBegin = emit({
+        fixture_id: world.fixtureId,
+        harness_version: world.harnessVersion,
+        parent_seq: null,
+        actor: "harness",
+        kind: "tool_invocation",
+        span: { id: spanId, phase: "begin" },
+        payload: { tool_name: "bash", input: { command: commandLine } },
+      });
+      const message = "bash tool called with an empty command";
+      emit({
+        fixture_id: world.fixtureId,
+        harness_version: world.harnessVersion,
+        parent_seq: invocationBegin.seq,
+        actor: "harness",
+        kind: "tool_invocation",
+        span: { id: spanId, phase: "end" },
+        payload: { tool_result: message, is_error: true },
+      });
+      return { exitCode: 2, stdout: "", stderr: message, events: collected };
+    }
+
     const spanId = `sh_${world.fixtureId}_${commandLine.length}`;
 
     const invocationBegin = emit({

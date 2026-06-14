@@ -14,3 +14,28 @@ export {
   MissingApiKeyError,
 } from "./live-harness.js";
 export type { LiveHarnessOptions } from "./live-harness.js";
+export {
+  buildFunctionTools,
+  qualifiedToolName,
+  FUNCTION_TOOL_SERVER_NAME,
+} from "./function-tools.js";
+export type { BuiltFunctionTool } from "./function-tools.js";
+export {
+  GateSchema,
+  GateLookupSchema,
+  GateCheckSchema,
+  GateOnFailSchema,
+  ToolRulesSchema,
+  StructuredHarnessSpecSchema,
+  FULL_REFUND_GATE_SET,
+  toStructuredSpec,
+  loadStructuredSpec,
+} from "./structured-spec.js";
+export type {
+  Gate,
+  GateLookup,
+  GateCheck,
+  GateOnFail,
+  ToolRules,
+  StructuredHarnessSpec,
+} from "./structured-spec.js";

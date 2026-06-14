@@ -6,15 +6,20 @@
 // wiring, the bash tool exposure, the trace drain, the no-key guard) is built
 // and typechecked keyless.
 //
-// How it drives the world: the harness exposes a single `bash` tool to the model
-// via an in-process SDK MCP server. When the model calls that tool, the handler
-// runs the command through the existing bash-tool callable, which executes it on
-// the run's BashSubstrate and emits the tool_invocation and shell trace hops. The
-// command's outbound HTTP reaches the egress gateway exactly as it does on the
-// scripted bash path, so the gateway writes the egress -> tool_dispatch ->
-// state_mutation chain and the hidden money moves the same way. The model never
-// sees the kernels or the gateway: it only runs shell commands and reads their
-// wire-faithful output, which is the whole point of the synthetic world.
+// How it drives the world: the harness exposes a clean set of named function
+// tools (get_ticket, lookup_order, lookup_customer, read_policy, issue_refund,
+// escalate_to_human) built from the spec's tool_manifest, plus the raw `bash`
+// tool for genuine computation. The agent no longer has to hand-write curl or
+// guess service addresses: each function tool composes the exact HTTP call it
+// represents and runs it through the same bash-tool callable, which executes it
+// on the run's BashSubstrate and emits the tool_invocation and shell trace hops.
+// The command's outbound HTTP reaches the egress gateway exactly as it does on
+// the scripted bash path, so the gateway writes the egress -> tool_dispatch ->
+// state_mutation chain and the hidden money moves the same way. issue_refund
+// therefore still hits the Stripe kernel and is gated only by its real mechanical
+// invariants. The model never sees the kernels or the gateway: it calls named
+// tools and reads their wire-faithful output, which is the whole point of the
+// synthetic world.
 //
 // How it fills the trace: the harness drains the query() stream and writes one
 // agent_turn per assistant turn (and per partial stream delta when
@@ -41,14 +46,21 @@ import type {
   WorldRunnerHandle,
 } from "@/engine";
 import { createBashTool, type BashTool } from "@/world/bash-tool.js";
+import {
+  buildFunctionTools,
+  FUNCTION_TOOL_SERVER_NAME,
+  qualifiedToolName,
+} from "./function-tools.js";
 import type { HarnessSpec } from "./specs/types.js";
 
-// The name the in-process MCP server registers under and the single tool it
-// exposes. The fully qualified tool name the SDK addresses is
-// `mcp__<server>__<tool>`, which is what `allowedTools` must list.
-const MCP_SERVER_NAME = "world";
+// The name the in-process MCP server registers under and the tools it exposes.
+// The fully qualified tool name the SDK addresses is `mcp__<server>__<tool>`,
+// which is what `allowedTools` must list. The bash tool stays available for
+// genuine computation alongside the named function tools the spec manifest
+// drives; both register under the same server.
+const MCP_SERVER_NAME = FUNCTION_TOOL_SERVER_NAME;
 const BASH_TOOL_NAME = "bash";
-const QUALIFIED_BASH_TOOL = `mcp__${MCP_SERVER_NAME}__${BASH_TOOL_NAME}`;
+const QUALIFIED_BASH_TOOL = qualifiedToolName(BASH_TOOL_NAME);
 
 // The model the live harness drives. Pinned to Opus; a spec may override it, but
 // the live path is built around the Opus 4.8 id.
@@ -138,34 +150,61 @@ async function runLive(
     throw new MissingApiKeyError();
   }
 
-  // The bash tool the model drives the world through: the same callable the
-  // scripted bash path uses, bound to this run's handle and substrate so its
-  // hops land in this fixture's trace and its egress reaches the gateway.
+  // The bash tool the named function tools and the model drive the world
+  // through: the same callable the scripted bash path uses, bound to this run's
+  // handle and substrate so its hops land in this fixture's trace and its egress
+  // reaches the gateway.
   const bash: BashTool = createBashTool({
     world,
     substrate: world.bash,
   });
 
-  const bashServer = createSdkMcpServer({
+  // The named function tools the spec's manifest describes, each composing the
+  // exact HTTP call it represents and running it through the bash tool. The agent
+  // calls these instead of hand-writing curl; the bash tool stays registered for
+  // genuine computation.
+  const functionTools = buildFunctionTools(spec, fixture, bash);
+
+  const worldServer = createSdkMcpServer({
     name: MCP_SERVER_NAME,
     version: "1.0.0",
-    tools: [defineBashTool(bash)],
+    tools: [defineBashTool(bash), ...functionTools.map((t) => t.tool)],
   });
+
+  const allowedTools = [
+    QUALIFIED_BASH_TOOL,
+    ...functionTools.map((t) => t.qualifiedName),
+  ];
 
   const queryOptions: Options = {
     model: spec.model.length > 0 ? spec.model : DEFAULT_MODEL,
     systemPrompt: spec.system_prompt,
-    mcpServers: { [MCP_SERVER_NAME]: bashServer },
-    allowedTools: [QUALIFIED_BASH_TOOL],
+    mcpServers: { [MCP_SERVER_NAME]: worldServer },
+    allowedTools,
     includePartialMessages: true,
     ...(maxTurns !== undefined ? { maxTurns } : {}),
   };
 
   const prompt = buildTaskPrompt(spec, fixture);
 
+  // The turn cap is enforced two ways: the SDK's own maxTurns option above, and
+  // this loop-level guard, which counts completed assistant turns and stops the
+  // stream the moment the cap is reached. The belt-and-braces guard keeps a
+  // runaway agent from streaming past the cap even if the SDK option is not
+  // honored by a given transport.
   const stream = query({ prompt, options: queryOptions });
+  let assistantTurns = 0;
   for await (const message of stream) {
     drainMessage(world, message);
+    if (message.type === "assistant") {
+      assistantTurns += 1;
+      if (maxTurns !== undefined && assistantTurns >= maxTurns) {
+        // Breaking the for-await loop drives the generator's return path, which
+        // tears the query down cleanly. This is the loop-level cap that holds
+        // even when the SDK's own maxTurns is not enforced by the transport.
+        break;
+      }
+    }
   }
 
   // The live harness does not write its own run/end frame. The terminal decision

@@ -15,7 +15,8 @@
     "sweep": "tsx scripts/sweep.ts",
     "sweep:bash": "tsx scripts/sweep-bash.ts",
     "sweep:live": "tsx scripts/sweep-live.ts",
-    "sweep:sandbox": "tsx scripts/sweep-sandbox.ts"
+    "sweep:sandbox": "tsx scripts/sweep-sandbox.ts",
+    "optimize": "tsx scripts/optimize.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.13",

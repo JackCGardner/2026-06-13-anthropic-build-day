@@ -34,3 +34,6 @@ coverage/
 .vscode/
 traces-bash/
 traces-live/
+traces-opt/
+traces-optimize/
+traces-optimizer/

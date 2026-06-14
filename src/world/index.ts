@@ -13,6 +13,7 @@ export {
   scriptedHarnessV1,
   scriptedHarnessV2,
 } from "./scripted-harness.js";
+export { createInterpreterHarness } from "./interpreter-harness.js";
 export {
   LocalBashSubstrate,
   createLocalBashSubstrate,
