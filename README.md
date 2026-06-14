@@ -131,11 +131,17 @@ gateway; the route still serves both transports through the one shared core.
 | `npm run dev` | The evidence-viewer UI rendering the keyless sweep | none |
 | `npm run sweep:live` | The agent under test driven by a real model through the Claude Agent SDK | `ANTHROPIC_API_KEY` (or a Claude Code login) |
 | `npm run sweep:sandbox` | Same numbers over real Vercel Sandbox microVMs against the deployed egress route | Vercel auth (`VERCEL_TOKEN` / `VERCEL_OIDC_TOKEN`) + `GATEWAY_PUBLIC_URL` |
+| `npm run optimize` | The optimizer loop discovering the policy gates from judge feedback: v1 $5,140 to v2 $0, technical flat, held-out Trust 100 | none |
+| `npm run research` | The research and initialization pipeline: a brief to a gate-passing harness spec plus dossiers, then a generic dossier-driven world that reproduces the trap | none for the refund reproduction; `ANTHROPIC_API_KEY` + `RESEARCH_WEB_ACCESS=1` to research a new brief live |
+| `npm run poke` | Drive any synthetic tool directly and watch the wire response plus the stripped state mutation | none for the kernel; `--persona` needs a key |
+| `npm run shell` | Enter an LLM-backed bash, or chat with a tool persona in character | `ANTHROPIC_API_KEY` |
 
-`sweep`, `sweep:bash`, and `npm run dev` are fully keyless. `sweep:live` is the
-only path that calls a model. `sweep:sandbox` is the only path that provisions
-real microVMs. Each gated path prints a friendly pointer and exits 0 when its
-credentials are absent, so the whole matrix is safe to run keyless.
+`sweep`, `sweep:bash`, `optimize`, `research` (refund reproduction), `poke`, and
+`npm run dev` are fully keyless. `sweep:live`, `shell`, and `optimize --harness live`
+call a model. `research` on a new brief also needs web access. `sweep:sandbox`
+provisions real microVMs. Each gated path prints a friendly pointer and exits 0
+when its credentials are absent, so the whole matrix is safe to run keyless. The
+full as-built status and roadmap mapping is in `docs/13-implemented-status.md`.
 
 Other useful scripts:
 
@@ -211,16 +217,29 @@ Synthetic sandboxes make it possible to test that gap cheaply and repeatedly.
 They let us pressure-test agent behavior before exposing it to production
 systems, real customers, real tickets, real files, or real spend.
 
-## Initial Prototype Direction
+## What is implemented
 
-The hackathon build will likely focus on:
+The full loop is built and runs keyless against the refund flagship, with the
+live model and real-microVM paths behind credentials:
 
-- a task description format for harness generation
-- a small set of synthetic tool agents, starting with shell-like execution
-- trace capture for every synthetic tool call
-- judge prompts for business-aligned evaluation
-- DSPy-driven iteration over harness prompts and tool specs
-- a demo scenario that shows the harness improving over repeated synthetic runs
+- **Research and initialization** turns a brief into a harness and its tools: an
+  intake interview, capability decomposition, tool discovery, contract
+  acquisition, dossiers with the enforced-versus-not-enforced split, and a gated
+  generation pass. Tools are instantiated from their dossiers by a generic kernel,
+  so nothing is hand-coded per tool.
+- **The synthetic world** is a society of agents: an egress gateway over a shared
+  core, a real local-exec and a real Vercel Sandbox bash substrate, an
+  LLM-backed bash, and each tool available either as a deterministic kernel or as
+  a Claude Agent SDK persona over that kernel (the kernel always owns money and
+  state).
+- **The judge** scores business fit deterministically from the trace.
+- **The optimizer** runs the harness, reads the judge's failure tags, proposes
+  spec edits, and keeps one only if Trust rises and technical-pass holds, learning
+  the policy gates on its own and validating on a held-out split.
+- **The evidence viewer** renders any of it.
+
+See `docs/13-implemented-status.md` for the as-built architecture, the roadmap
+mapping, and how to run every path with your own keys.
 
 ## License
 
