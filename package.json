@@ -12,6 +12,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "research": "tsx scripts/research.ts",
     "sweep": "tsx scripts/sweep.ts",
     "sweep:bash": "tsx scripts/sweep-bash.ts",
     "sweep:live": "tsx scripts/sweep-live.ts",

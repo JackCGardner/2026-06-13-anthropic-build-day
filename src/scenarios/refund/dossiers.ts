@@ -77,6 +77,11 @@ const stripePayments: ToolDossier = {
           id: "one_of_charge_or_pi",
           on_violation: { http: 400, code: "parameter_missing" },
         },
+        {
+          id: "idempotency_replay",
+          on_violation: { http: 400, code: "idempotency_key_in_use" },
+          rule: "same key + same params replays; same key + different params conflicts",
+        },
       ],
       // The API returns 200 on these anyway. THE TRAP. Never loaded into the
       // kernel; fed to the harness instructions by its absence and to the

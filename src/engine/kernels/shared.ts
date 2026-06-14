@@ -31,6 +31,18 @@ export class ScopedStore {
     return this.state.records[key];
   }
 
+  // Read the single record whose key belongs to a family, e.g. "policy" matches
+  // the seeded "policy:refund". Keys are scanned in insertion order; the first
+  // match wins. Used by a singleton-resource read (a GET with no id in the path)
+  // that returns the one record its family holds. Undefined when none exists.
+  firstByPrefix(family: string): Record<string, unknown> | undefined {
+    const prefix = `${family}:`;
+    for (const [key, value] of Object.entries(this.state.records)) {
+      if (key.startsWith(prefix)) return value;
+    }
+    return undefined;
+  }
+
   // The current monthly refund budget in cents. The hidden figure the trap drains.
   budgetCents(): number {
     return this.state.monthly_refund_budget_cents;

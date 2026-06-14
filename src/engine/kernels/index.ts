@@ -27,6 +27,16 @@ import { policyKernel } from "./policy.js";
 import { zendeskKernel } from "./zendesk.js";
 
 export { ScopedStore } from "./shared.js";
+export {
+  createGenericKernel,
+  INVARIANT_REGISTRY,
+} from "./generic-kernel.js";
+export type {
+  InvariantType,
+  InvariantChecker,
+  InvariantContext,
+  InvariantViolation,
+} from "./generic-kernel.js";
 export { stripeKernel } from "./stripe.js";
 export { ordersKernel } from "./orders.js";
 export { customersKernel } from "./customers.js";

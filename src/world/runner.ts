@@ -13,6 +13,7 @@ import type {
   Fixture,
   Harness,
   HarnessVersion,
+  ToolKernel,
   ToolResponse,
   TraceEvent,
   WorldRunnerHandle,
@@ -21,6 +22,13 @@ import type {
 } from "@/engine";
 import { kernelFor } from "@/engine/kernels/index.js";
 import { seedWorld, KERNEL_TOOL_IDS, type KernelToolId } from "./seed.js";
+
+// How the runner resolves a tool id to the kernel that serves it. The default
+// is the global hand-kernel registry; the research pipeline passes a resolver
+// backed by generic dossier-driven kernels so a sweep can be driven against the
+// generic tools with no change to the hand kernels' authority. The resolver is
+// additive: omit it and the runner behaves exactly as before.
+export type KernelResolver = (toolId: string) => ToolKernel | undefined;
 
 // A run is one harness version swept across every fixture. The runner returns
 // the per-fixture traces plus the inputs the judge consumes, so the caller can
@@ -56,6 +64,7 @@ class FixtureContext {
     private readonly fixtureId: string,
     private readonly harnessVersion: HarnessVersion,
     private readonly world: Record<KernelToolId, WorldState>,
+    private readonly resolveKernel: KernelResolver,
   ) {}
 
   // Append one event, assigning the monotonic seq and a timestamp. Producers
@@ -77,7 +86,7 @@ class FixtureContext {
   // state_mutation parented to that dispatch, and the egress response. The full
   // chain is what the Judge and the viewer read.
   dispatch(req: EgressRequest): ToolResponse {
-    const kernel = kernelFor(req.tool_id);
+    const kernel = this.resolveKernel(req.tool_id);
     const url = `${req.tool_id}://${req.path}`;
 
     const egressBegin = this.emit({
@@ -211,9 +220,16 @@ async function runFixture(
   runId: string,
   harness: Harness,
   fixture: Fixture,
+  resolveKernel: KernelResolver,
 ): Promise<{ fixtureId: string; fixture: Fixture; events: TraceEvent[] }> {
   const world = seedWorld(fixture, `${runId}:${fixture.id}`);
-  const ctx = new FixtureContext(runId, fixture.id, harness.version, world);
+  const ctx = new FixtureContext(
+    runId,
+    fixture.id,
+    harness.version,
+    world,
+    resolveKernel,
+  );
 
   ctx.emit({
     fixture_id: fixture.id,
@@ -266,10 +282,11 @@ export async function runSweep(
   runId: string,
   harness: Harness,
   fixtures: Fixture[],
+  resolveKernel: KernelResolver = kernelFor,
 ): Promise<RunResult> {
   const results: RunResult["fixtures"] = [];
   for (const fixture of fixtures) {
-    results.push(await runFixture(runId, harness, fixture));
+    results.push(await runFixture(runId, harness, fixture, resolveKernel));
   }
   return {
     runId,

@@ -5,7 +5,7 @@
 // touch only the frozen seams, so the live harness drops in unchanged later.
 
 export { runSweep, KERNEL_TOOL_IDS } from "./runner.js";
-export type { RunResult } from "./runner.js";
+export type { RunResult, KernelResolver } from "./runner.js";
 export { seedWorld } from "./seed.js";
 export type { KernelToolId } from "./seed.js";
 export {
