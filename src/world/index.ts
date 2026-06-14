@@ -46,6 +46,7 @@ export type {
 } from "./gateway.js";
 export {
   handleEgress,
+  handleEgressWithPersona,
   decodeBody,
   stripObservabilityHeaders,
   JSON_HEADERS,
@@ -56,7 +57,21 @@ export type {
   WireResponse,
   SandboxBinding,
   EgressTraceWriter,
+  PersonaRegistry,
+  CallOrigin,
 } from "./egress-core.js";
+export {
+  createToolPersona,
+  buildToolPersonas,
+  buildPersonaSystemPrompt,
+  hasPersonaCredential,
+  revalidate,
+} from "./tool-persona.js";
+export type {
+  ToolPersona,
+  CreateToolPersonaOptions,
+  BuildPersonasInput,
+} from "./tool-persona.js";
 export {
   egressBindingStore,
   createEgressBindingStore,
@@ -94,3 +109,18 @@ export type {
   SandboxNetworkPolicy,
   NetworkPolicyAllowEntry,
 } from "./bash-vercel.js";
+export {
+  LlmBashSubstrate,
+  createLlmBashSubstrate,
+  hasApiKey,
+  MissingApiKeyError,
+  ANTHROPIC_API_KEY_ENV,
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  CLAUDE_AGENT_SDK_AMBIENT_AUTH_ENV,
+} from "./bash-llm.js";
+export type {
+  LlmBashSubstrateOptions,
+  LlmBashResult,
+  LlmSeedFile,
+  LlmBashEgressBridge,
+} from "./bash-llm.js";

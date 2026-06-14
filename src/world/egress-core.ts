@@ -25,12 +25,14 @@
 
 import type {
   EgressRequest,
+  ToolKernel,
   ToolResponse,
   TraceEvent,
   WorldState,
   HarnessVersion,
 } from "@/engine";
 import { kernelFor } from "@/engine/kernels/index.js";
+import type { ToolPersona } from "./tool-persona.js";
 import {
   STRIPE_TOOL_ID,
   ORDERS_TOOL_ID,
@@ -68,6 +70,18 @@ export type WorldResolver = (
   fixtureId: string,
 ) => Record<string, WorldState> | undefined;
 
+// How the core resolves a per-tool persona agent for a bound fixture, when
+// persona mode is engaged. The World Runner builds one persona per (fixture,
+// tool) wrapping that tool's kernel, and exposes it here keyed by fixture and the
+// resolved tool_id. Returning undefined means no persona is registered for that
+// tool, so the core falls back to the raw kernel for that call. The registry
+// itself is only consulted on the async persona path; the synchronous default
+// path never reaches it, so a persona-off run is byte-identical to today.
+export type PersonaRegistry = (
+  fixtureId: string,
+  toolId: string,
+) => ToolPersona | undefined;
+
 // The binding a sandbox identity resolves to: the fixture whose world the call
 // hits, the run the trace belongs to, and the harness version that frames each
 // event. The M0 transport resolves this from the tag header; the M1 transport
@@ -103,6 +117,21 @@ export interface WireResponse {
   headers: Record<string, string>;
   body: unknown;
 }
+
+// Who drove a call, stamped onto every trace event the core writes so one unified
+// trace can distinguish a scored run from a human poke from a persona-enriched
+// dispatch. "harness" is the default and is byte-equivalent to leaving it unset
+// in every scored field; the marker rides only in the payload's observability
+// channel, which the Judge ignores and the wire never carries.
+//   - harness: a scored or scripted run drove the call (the default).
+//   - human:   a person drove the call directly (the poke CLI or the shell REPL).
+//   - persona: the call was served through a tool persona (in-character prose).
+export type CallOrigin = "harness" | "human" | "persona";
+
+// The default origin. A call with no explicit origin is a harness call, which
+// keeps the scored runs and the keyless sweeps stamping exactly what they always
+// did under the same key in every payload.
+const DEFAULT_ORIGIN: CallOrigin = "harness";
 
 // ---------------------------------------------------------------------------
 // Tool-id resolution. A real sandbox calls real hostnames (api.stripe.com, the
@@ -193,21 +222,34 @@ export interface HandleEgressInput {
   request: NormalizedRequest;
   trace: EgressTraceWriter;
   resolveWorld: WorldResolver;
+  // The optional persona registry. Present only when persona mode is engaged on
+  // the async entry point; the synchronous handleEgress ignores it entirely, so
+  // a persona-off run never consults it and stays byte-identical to today.
+  personas?: PersonaRegistry;
+  // Who drove this call, stamped onto every trace event so one unified trace can
+  // tell a human poke from a scored run from a persona dispatch. Omitted or
+  // "harness" leaves every payload exactly as it was, so the scored runs and the
+  // keyless sweeps are byte-identical; only an explicit "human"/"persona" adds the
+  // marker to the observability channel the Judge ignores and the wire never sees.
+  origin?: CallOrigin;
 }
 
 // The single entry point both transports share. Resolves the tool_id and world,
 // dispatches into the kernel, emits the full trace chain, and returns the
 // wire-faithful response. Loud on every failure: no default kernel, no default
 // fixture, no silent success.
+//
+// This synchronous form is the default and the only path the scored runs and the
+// keyless sweeps take. It never touches a persona, so its behavior is unchanged.
 export function handleEgress(input: HandleEgressInput): WireResponse {
-  const { binding, sandboxId, request, trace, resolveWorld } = input;
+  const { binding, sandboxId, request, trace, resolveWorld, origin } = input;
   const { host, method, path, query, headers, body } = request;
   const url = host !== undefined ? `http://${host}${path}` : path;
 
   // A missing or unbound identity is a loud failure: there is no fixture to
   // scope the call to. Emit a trace point so the misconfiguration is visible.
   if (binding === undefined) {
-    return rejectUnbound({ trace, sandboxId, method, url, host, path, query, headers, body });
+    return rejectUnbound({ trace, sandboxId, method, url, host, path, query, headers, body, origin });
   }
 
   const toolId = resolveToolId(host, path);
@@ -222,6 +264,7 @@ export function handleEgress(input: HandleEgressInput): WireResponse {
       method,
       url,
       toolId,
+      origin,
       req: {
         tool_id: toolId ?? "",
         ...(sandboxId !== undefined ? { sandbox_id: sandboxId } : {}),
@@ -244,7 +287,80 @@ export function handleEgress(input: HandleEgressInput): WireResponse {
     body,
   };
 
-  return dispatch({ trace, binding, req: egressReq, url, world });
+  return dispatch({ trace, binding, req: egressReq, url, world, origin });
+}
+
+// The persona-aware entry point. It mirrors handleEgress exactly except that, on
+// the happy path, it routes the request through the registered per-tool persona
+// (kernel-first, advisory enrichment, re-validation) instead of calling the
+// kernel directly. Persona mode defaults OFF: when no registry is supplied, or no
+// persona is registered for the resolved tool, this falls straight back to the
+// synchronous kernel dispatch, so the call is identical to handleEgress. The
+// persona path is taken only when a registry resolves a persona, which the World
+// Runner does only when the caller asked for personas AND a credential exists.
+export async function handleEgressWithPersona(
+  input: HandleEgressInput,
+): Promise<WireResponse> {
+  const { binding, sandboxId, request, trace, resolveWorld, personas, origin } =
+    input;
+  const { host, method, path, query, headers, body } = request;
+  const url = host !== undefined ? `http://${host}${path}` : path;
+
+  if (binding === undefined) {
+    return rejectUnbound({ trace, sandboxId, method, url, host, path, query, headers, body, origin });
+  }
+
+  const toolId = resolveToolId(host, path);
+  const world = resolveWorld(binding.fixtureId);
+
+  if (toolId === undefined || world === undefined) {
+    return rejectUnknownTool({
+      trace,
+      binding,
+      method,
+      url,
+      toolId,
+      origin,
+      req: {
+        tool_id: toolId ?? "",
+        ...(sandboxId !== undefined ? { sandbox_id: sandboxId } : {}),
+        method,
+        path,
+        query,
+        headers,
+        body,
+      },
+    });
+  }
+
+  const egressReq: EgressRequest = {
+    tool_id: toolId,
+    ...(sandboxId !== undefined ? { sandbox_id: sandboxId } : {}),
+    method,
+    path,
+    query,
+    headers,
+    body,
+  };
+
+  // No registry, or no persona for this tool: identical to the synchronous path.
+  const persona = personas?.(binding.fixtureId, toolId);
+  if (persona === undefined) {
+    return dispatch({ trace, binding, req: egressReq, url, world, origin });
+  }
+
+  // A persona served the call: the origin is a persona dispatch unless the caller
+  // already named a more specific driver (a human poking through a persona keeps
+  // the "human" marker so the unified trace still attributes the actor).
+  return dispatchAsync({
+    trace,
+    binding,
+    req: egressReq,
+    url,
+    world,
+    persona,
+    origin: origin ?? "persona",
+  });
 }
 
 // The unbound/missing-identity rejection: a single egress point event records
@@ -260,8 +376,10 @@ function rejectUnbound(args: {
   query: Record<string, string>;
   headers: Record<string, string>;
   body: unknown;
+  origin: CallOrigin | undefined;
 }): WireResponse {
-  const { trace, sandboxId, method, url, host, path, query, headers, body } = args;
+  const { trace, sandboxId, method, url, host, path, query, headers, body, origin } =
+    args;
   const errorBody = {
     error: {
       type: "api_error",
@@ -280,18 +398,21 @@ function rejectUnbound(args: {
     actor: "bash",
     kind: "egress",
     span: { id: "eg_unbound", phase: "point" },
-    payload: {
-      method,
-      url,
-      request_headers: headers,
-      request_body: body,
-      status: 502,
-      response_body: errorBody,
-      rejected: "unbound_sandbox",
-      host: host ?? "",
-      path,
-      query,
-    },
+    payload: withOrigin(
+      {
+        method,
+        url,
+        request_headers: headers,
+        request_body: body,
+        status: 502,
+        response_body: errorBody,
+        rejected: "unbound_sandbox",
+        host: host ?? "",
+        path,
+        query,
+      },
+      origin,
+    ),
   });
   return { status: 502, headers: JSON_HEADERS, body: errorBody };
 }
@@ -306,8 +427,9 @@ function rejectUnknownTool(args: {
   url: string;
   toolId: string | undefined;
   req: EgressRequest;
+  origin: CallOrigin | undefined;
 }): WireResponse {
-  const { trace, binding, method, url, toolId, req } = args;
+  const { trace, binding, method, url, toolId, req, origin } = args;
   const errorBody = {
     error: {
       type: "api_error",
@@ -326,15 +448,18 @@ function rejectUnknownTool(args: {
     actor: "bash",
     kind: "egress",
     span: { id: `eg_unknown_${method}`, phase: "point" },
-    payload: {
-      method,
-      url,
-      request_headers: req.headers,
-      request_body: req.body,
-      status: 502,
-      response_body: errorBody,
-      rejected: "unknown_tool",
-    },
+    payload: withOrigin(
+      {
+        method,
+        url,
+        request_headers: req.headers,
+        request_body: req.body,
+        status: 502,
+        response_body: errorBody,
+        rejected: "unknown_tool",
+      },
+      origin,
+    ),
   });
   return { status: 502, headers: JSON_HEADERS, body: errorBody };
 }
@@ -342,20 +467,107 @@ function rejectUnknownTool(args: {
 // The happy path: emit the egress begin, the tool_dispatch begin, run the kernel
 // against the scoped state, emit each state_mutation parented to the dispatch,
 // then close the dispatch and the egress. The wire body is the kernel's body
-// with the observability channel stripped.
+// with the observability channel stripped. The kernel is the response provider;
+// the trace emission is shared with the persona path through emitDispatchTrace.
 function dispatch(args: {
   trace: EgressTraceWriter;
   binding: SandboxBinding;
   req: EgressRequest;
   url: string;
   world: Record<string, WorldState>;
+  origin: CallOrigin | undefined;
 }): WireResponse {
-  const { trace, binding, req, url, world } = args;
-  const frame = {
+  const { trace, binding, req, url, world, origin } = args;
+
+  const begun = beginDispatch({ trace, binding, req, url, world, origin });
+  if (begun.kind === "rejected") return begun.response;
+
+  // The kernel runs synchronously and is the authoritative response.
+  const response = begun.kernel(req, begun.state);
+  return emitDispatchTrace({
+    trace,
+    frame: begun.frame,
+    req,
+    url,
+    egressBeginSeq: begun.egressBeginSeq,
+    dispatchBeginSeq: begun.dispatchBeginSeq,
+    response,
+    origin,
+  });
+}
+
+// The persona-aware happy path: identical trace chain to dispatch, but the
+// response provider is the tool persona. The kernel still runs first (inside the
+// persona) and remains the authority for status, body data, money, and state;
+// the persona may enrich only the message string, and its re-validation seam
+// rebuilds every other field from the kernel's values, so the trace the Judge
+// reads is unchanged in every scored field.
+async function dispatchAsync(args: {
+  trace: EgressTraceWriter;
+  binding: SandboxBinding;
+  req: EgressRequest;
+  url: string;
+  world: Record<string, WorldState>;
+  persona: ToolPersona;
+  origin: CallOrigin | undefined;
+}): Promise<WireResponse> {
+  const { trace, binding, req, url, world, persona, origin } = args;
+
+  const begun = beginDispatch({ trace, binding, req, url, world, origin });
+  if (begun.kind === "rejected") return begun.response;
+
+  // The persona runs the kernel first internally, then optionally enriches the
+  // message and re-validates. The awaited response carries the kernel's
+  // authoritative status, body data, headers, and state_mutations.
+  const response = await persona.dispatch(req, begun.state);
+  return emitDispatchTrace({
+    trace,
+    frame: begun.frame,
+    req,
+    url,
+    egressBeginSeq: begun.egressBeginSeq,
+    dispatchBeginSeq: begun.dispatchBeginSeq,
+    response,
+    origin,
+  });
+}
+
+// The shared dispatch opening. Emits the egress begin, resolves the kernel and
+// the scoped state, rejects loud when either is missing, and otherwise emits the
+// tool_dispatch begin. Both the synchronous and persona paths call this so the
+// trace shape is defined exactly once; they differ only in who computes the
+// ToolResponse afterward.
+type DispatchFrame = {
+  readonly run_id: string;
+  readonly fixture_id: string;
+  readonly harness_version: HarnessVersion;
+};
+
+type BeginResult =
+  | { kind: "rejected"; response: WireResponse }
+  | {
+      kind: "ready";
+      frame: DispatchFrame;
+      kernel: ToolKernel;
+      state: WorldState;
+      egressBeginSeq: number;
+      dispatchBeginSeq: number;
+    };
+
+function beginDispatch(args: {
+  trace: EgressTraceWriter;
+  binding: SandboxBinding;
+  req: EgressRequest;
+  url: string;
+  world: Record<string, WorldState>;
+  origin: CallOrigin | undefined;
+}): BeginResult {
+  const { trace, binding, req, url, world, origin } = args;
+  const frame: DispatchFrame = {
     run_id: binding.runId,
     fixture_id: binding.fixtureId,
     harness_version: binding.harnessVersion,
-  } as const;
+  };
 
   const egressBegin = trace({
     ...frame,
@@ -363,12 +575,15 @@ function dispatch(args: {
     actor: "bash",
     kind: "egress",
     span: { id: `eg_${req.tool_id}`, phase: "begin" },
-    payload: {
-      method: req.method,
-      url,
-      request_headers: req.headers,
-      request_body: req.body,
-    },
+    payload: withOrigin(
+      {
+        method: req.method,
+        url,
+        request_headers: req.headers,
+        request_body: req.body,
+      },
+      origin,
+    ),
   });
 
   const kernel = kernelFor(req.tool_id);
@@ -390,14 +605,20 @@ function dispatch(args: {
       actor: "bash",
       kind: "egress",
       span: { id: egressBegin.span.id, phase: "end" },
-      payload: {
-        status: 502,
-        url,
-        response_body: errorBody,
-        rejected: "unknown_tool",
-      },
+      payload: withOrigin(
+        {
+          status: 502,
+          url,
+          response_body: errorBody,
+          rejected: "unknown_tool",
+        },
+        origin,
+      ),
     });
-    return { status: 502, headers: JSON_HEADERS, body: errorBody };
+    return {
+      kind: "rejected",
+      response: { status: 502, headers: JSON_HEADERS, body: errorBody },
+    };
   }
 
   const dispatchBegin = trace({
@@ -406,10 +627,36 @@ function dispatch(args: {
     actor: `tool:${req.tool_id}`,
     kind: "tool_dispatch",
     span: { id: `td_${req.tool_id}`, phase: "begin" },
-    payload: { tool_id: req.tool_id, request: req },
+    payload: withOrigin({ tool_id: req.tool_id, request: req }, origin),
   });
 
-  const response: ToolResponse = kernel(req, state);
+  return {
+    kind: "ready",
+    frame,
+    kernel,
+    state,
+    egressBeginSeq: egressBegin.seq,
+    dispatchBeginSeq: dispatchBegin.seq,
+  };
+}
+
+// The shared dispatch close. Given the computed ToolResponse, echo every
+// state_mutation parented to the dispatch, close the dispatch and the egress, and
+// return the wire-faithful response with the observability channel stripped. This
+// is identical for the kernel and persona paths because the persona's response
+// carries the kernel's authoritative non-message fields verbatim.
+function emitDispatchTrace(args: {
+  trace: EgressTraceWriter;
+  frame: DispatchFrame;
+  req: EgressRequest;
+  url: string;
+  egressBeginSeq: number;
+  dispatchBeginSeq: number;
+  response: ToolResponse;
+  origin: CallOrigin | undefined;
+}): WireResponse {
+  const { trace, frame, req, url, egressBeginSeq, dispatchBeginSeq, response, origin } =
+    args;
 
   // Echo every hidden-state delta as an explicit state_mutation parented to the
   // dispatch. This is the observability channel: the Judge trusts these lines,
@@ -417,41 +664,47 @@ function dispatch(args: {
   for (const mutation of response.state_mutations) {
     trace({
       ...frame,
-      parent_seq: dispatchBegin.seq,
+      parent_seq: dispatchBeginSeq,
       actor: `tool:${req.tool_id}`,
       kind: "state_mutation",
       span: { id: `sm_${req.tool_id}`, phase: "point" },
-      payload: {
-        key: mutation.key,
-        before: mutation.before,
-        after: mutation.after,
-        reason: mutation.reason,
-      },
+      payload: withOrigin(
+        {
+          key: mutation.key,
+          before: mutation.before,
+          after: mutation.after,
+          reason: mutation.reason,
+        },
+        origin,
+      ),
     });
   }
 
   trace({
     ...frame,
-    parent_seq: dispatchBegin.seq,
+    parent_seq: dispatchBeginSeq,
     actor: `tool:${req.tool_id}`,
     kind: "tool_dispatch",
-    span: { id: dispatchBegin.span.id, phase: "end" },
-    payload: { status: response.status, body: response.body },
+    span: { id: `td_${req.tool_id}`, phase: "end" },
+    payload: withOrigin({ status: response.status, body: response.body }, origin),
   });
 
   trace({
     ...frame,
-    parent_seq: egressBegin.seq,
+    parent_seq: egressBeginSeq,
     actor: "bash",
     kind: "egress",
-    span: { id: egressBegin.span.id, phase: "end" },
-    payload: {
-      status: response.status,
-      url,
-      response_headers: response.headers,
-      response_body: response.body,
-      enforced_invariants_checked: invariantsHeader(response.headers),
-    },
+    span: { id: `eg_${req.tool_id}`, phase: "end" },
+    payload: withOrigin(
+      {
+        status: response.status,
+        url,
+        response_headers: response.headers,
+        response_body: response.body,
+        enforced_invariants_checked: invariantsHeader(response.headers),
+      },
+      origin,
+    ),
   });
 
   // Strip the observability channel from the wire response. `state_mutations`
@@ -468,6 +721,21 @@ function dispatch(args: {
 // Shared wire helpers. Both transports reuse these so the bytes they emit are
 // identical regardless of which one served the call.
 // ---------------------------------------------------------------------------
+
+// Stamp the call origin onto a trace payload, but ONLY when it is an explicit
+// non-default driver. An undefined or "harness" origin returns the payload object
+// untouched, so a scored run and the keyless sweeps emit byte-identical payloads
+// to before this marker existed; only a human poke or a persona dispatch adds the
+// `origin` key to the observability channel the Judge ignores and the wire strips.
+function withOrigin(
+  payload: Record<string, unknown>,
+  origin: CallOrigin | undefined,
+): Record<string, unknown> {
+  if (origin === undefined || origin === DEFAULT_ORIGIN) {
+    return payload;
+  }
+  return { ...payload, origin };
+}
 
 export const JSON_HEADERS: Record<string, string> = {
   "content-type": "application/json",

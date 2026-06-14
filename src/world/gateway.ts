@@ -28,6 +28,7 @@ import type { AddressInfo } from "node:net";
 import type { HarnessVersion } from "@/engine";
 import {
   handleEgress,
+  handleEgressWithPersona,
   decodeBody,
   resolveToolId,
   SANDBOX_TAG_HEADER,
@@ -35,6 +36,8 @@ import {
   JSON_HEADERS,
   type SandboxBinding,
   type WorldResolver,
+  type PersonaRegistry,
+  type CallOrigin,
   type EgressTraceWriter,
   type NormalizedRequest,
   type WireResponse,
@@ -54,6 +57,18 @@ export type { WorldResolver };
 export interface CreateEgressGatewayOptions {
   resolveWorld: WorldResolver;
   trace: GatewayTraceWriter;
+  // The optional per-tool persona registry. When present, an intercepted call is
+  // served through the async persona path (kernel-first, advisory enrichment,
+  // re-validation) instead of the synchronous kernel dispatch. The kernel remains
+  // the authority for status, money, and state; the persona may enrich only the
+  // message prose. Omitted (the default) keeps the gateway on the synchronous
+  // kernel path, byte-identical to a scored run with no persona. The registry is
+  // only consulted when a credential is present, which the caller gates on.
+  personas?: PersonaRegistry;
+  // Who drives the calls this gateway serves, stamped onto every trace event so
+  // one unified trace can tell a scored run from a human session from a persona
+  // dispatch. Defaults to a harness call, which leaves every payload unchanged.
+  origin?: CallOrigin;
 }
 
 // The public surface the World Runner drives. `bind` registers a sandbox tag
@@ -140,7 +155,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 export async function createEgressGateway(
   options: CreateEgressGatewayOptions,
 ): Promise<EgressGateway> {
-  const { resolveWorld, trace } = options;
+  const { resolveWorld, trace, personas, origin } = options;
   const bindings = new Map<string, SandboxBinding>();
 
   const server: Server = createServer((req, res) => {
@@ -179,12 +194,29 @@ export async function createEgressGateway(
       body,
     };
 
-    return handleEgress({
+    // With no persona registry the synchronous kernel path serves the call,
+    // byte-identical to a scored run. With one, the async persona path is taken;
+    // it falls back to the kernel for any tool the registry does not resolve, so
+    // an unregistered tool is still served identically.
+    if (personas === undefined) {
+      return handleEgress({
+        binding,
+        sandboxId: tag,
+        request,
+        trace,
+        resolveWorld,
+        ...(origin !== undefined ? { origin } : {}),
+      });
+    }
+
+    return handleEgressWithPersona({
       binding,
       sandboxId: tag,
       request,
       trace,
       resolveWorld,
+      personas,
+      ...(origin !== undefined ? { origin } : {}),
     });
   }
 

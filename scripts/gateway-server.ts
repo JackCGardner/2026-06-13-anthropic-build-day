@@ -17,15 +17,45 @@
 //   env GATEWAY_VERSION      the harness version (v1 | v2) stamped on events
 //   env GATEWAY_TAG          the sandbox binding tag the parent's commands carry
 //   env GATEWAY_TRACE_FILE   the JSONL file this process appends trace events to
+//   env GATEWAY_PERSONAS     "1" to serve calls through the per-tool personas
 //   stdout "READY <url>"     printed once the server is listening
 //   stdin  "CLOSE"           tells the process to flush and exit cleanly
 
 import { appendFileSync } from "node:fs";
 
-import type { TraceEvent, HarnessVersion } from "@/engine";
+import type { TraceEvent, HarnessVersion, ToolDossier } from "@/engine";
 import { loadRefundPack } from "@/scenarios/refund/index.js";
-import { seedWorld } from "@/world/seed.js";
+import { REFUND_DOSSIERS } from "@/scenarios/refund/dossiers.js";
+import { KERNELS } from "@/engine/kernels/index.js";
+import { seedWorld, KERNEL_TOOL_IDS, type KernelToolId } from "@/world/seed.js";
 import { createEgressGateway } from "@/world/gateway.js";
+import {
+  buildToolPersonas,
+  hasPersonaCredential,
+  type PersonaRegistry,
+} from "@/world/index.js";
+
+// The dossier tool id each kernel service is described by, so a persona is built
+// from the right contract. Mirrors the runner's kernel-to-dossier mapping.
+const DOSSIER_FOR_TOOL: Record<KernelToolId, string> = {
+  stripe: "stripe_payments",
+  orders: "orders",
+  customers: "customers",
+  policy: "policy_store",
+  zendesk: "zendesk_support",
+};
+
+// Resolve the dossiers keyed by kernel tool id from the refund pack, for persona
+// construction. Tools with no dossier are simply left to the raw kernel.
+function dossiersByToolId(): Record<string, ToolDossier> {
+  const out: Record<string, ToolDossier> = {};
+  for (const toolId of KERNEL_TOOL_IDS) {
+    const dossierId = DOSSIER_FOR_TOOL[toolId];
+    const dossier = REFUND_DOSSIERS.find((d) => d.tool_id === dossierId);
+    if (dossier !== undefined) out[toolId] = dossier;
+  }
+  return out;
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -70,9 +100,30 @@ async function main(): Promise<void> {
     return full;
   };
 
+  // Persona mode is opt-in via GATEWAY_PERSONAS and only engages when a model
+  // credential is present. When it does, every intercepted call is served through
+  // the per-tool persona, which runs the kernel first (money and state stay
+  // kernel-owned) and may enrich only the message prose; the egress event carries
+  // an origin of "persona" so the unified trace marks the in-character path.
+  // Without the flag, or with no credential, the gateway uses the kernel directly.
+  let personas: PersonaRegistry | undefined;
+  let origin: "persona" | undefined;
+  if (process.env.GATEWAY_PERSONAS === "1" && hasPersonaCredential()) {
+    const registry = buildToolPersonas({
+      fixtureId: fixture.id,
+      dossiers: dossiersByToolId(),
+      kernels: KERNELS,
+    });
+    personas = (fixtureId, toolId) =>
+      fixtureId === fixture.id ? registry[toolId] : undefined;
+    origin = "persona";
+  }
+
   const gateway = await createEgressGateway({
     resolveWorld: (id) => (id === fixture.id ? world : undefined),
     trace,
+    ...(personas !== undefined ? { personas } : {}),
+    ...(origin !== undefined ? { origin } : {}),
   });
   gateway.bind(tag, fixture.id, runId, version);
 

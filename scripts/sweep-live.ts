@@ -17,6 +17,14 @@
 //   tsx scripts/sweep-live.ts
 //   tsx scripts/sweep-live.ts --traces ./out/traces-live
 //   tsx scripts/sweep-live.ts --max-turns 24
+//   tsx scripts/sweep-live.ts --personas      run the synthetic tools in character
+//
+// With --personas the per-fixture gateway serves every intercepted call through
+// the tool persona for that service: the kernel still runs first and owns the
+// money and the state, but the response message is rewritten in the service's
+// voice, so the live demo shows in-character synthetic tools while the scored
+// numbers stay kernel-owned. The flag is key-gated by the same credential the
+// live model needs; without a key the sweep takes the keyless no-key exit below.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
@@ -75,6 +83,7 @@ function startGateway(
   version: HarnessVersion,
   tag: string,
   dir: string,
+  personas: boolean,
 ): Promise<GatewayProcess> {
   const traceFile = join(dir, `gateway_${runId}_${fixtureId}.jsonl`);
   writeFileSync(traceFile, "", "utf8");
@@ -87,6 +96,7 @@ function startGateway(
       GATEWAY_VERSION: version,
       GATEWAY_TAG: tag,
       GATEWAY_TRACE_FILE: traceFile,
+      ...(personas ? { GATEWAY_PERSONAS: "1" } : {}),
     },
   });
 
@@ -137,9 +147,17 @@ async function runFixtureLive(
   fixture: Fixture,
   runId: string,
   dir: string,
+  personas: boolean,
 ): Promise<{ fixtureId: string; fixture: Fixture; events: TraceEvent[] }> {
   const tag = `tag_${runId}_${fixture.id}`;
-  const gateway = await startGateway(fixture.id, runId, harness.version, tag, dir);
+  const gateway = await startGateway(
+    fixture.id,
+    runId,
+    harness.version,
+    tag,
+    dir,
+    personas,
+  );
   const substrate = await createLocalBashSubstrate({
     binding: { gatewayBaseUrl: gateway.url, sandboxTag: tag },
   });
@@ -274,11 +292,12 @@ async function sweepLive(
   harness: Harness,
   fixtures: Fixture[],
   dir: string,
+  personas: boolean,
 ): Promise<LiveRunResult> {
   const results: LiveRunResult["fixtures"] = [];
   for (const fixture of fixtures) {
     console.log(`  running ${harness.version} / ${fixture.id} ...`);
-    results.push(await runFixtureLive(harness, fixture, runId, dir));
+    results.push(await runFixtureLive(harness, fixture, runId, dir, personas));
   }
   return { runId, harnessVersion: harness.version, fixtures: results };
 }
@@ -387,8 +406,15 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const tracesDir = parseTracesDir(argv);
   const maxTurns = parseMaxTurns(argv);
+  const personas = argv.includes("--personas");
   const pack = loadRefundPack();
   const workDir = mkdtempSync(join(tmpdir(), "synth-sweep-live-"));
+
+  if (personas) {
+    console.log(
+      "  personas: synthetic tools will answer in character (kernel-owned money).",
+    );
+  }
 
   // The live harnesses are built from the same pinned specs the gates validate:
   // v1 is rule-silent, v2 is the tightened spec. Construction is keyless; the
@@ -404,11 +430,11 @@ async function main(): Promise<void> {
     ...(maxTurns !== undefined ? { maxTurns } : {}),
   });
 
-  const v1Run = await sweepLive("run_v1_live", liveV1, pack.fixtures, workDir);
+  const v1Run = await sweepLive("run_v1_live", liveV1, pack.fixtures, workDir, personas);
   writeTraces(tracesDir, v1Run);
   const v1Score = await judgeRun(v1Run);
 
-  const v2Run = await sweepLive("run_v2_live", liveV2, pack.fixtures, workDir);
+  const v2Run = await sweepLive("run_v2_live", liveV2, pack.fixtures, workDir, personas);
   writeTraces(tracesDir, v2Run);
   const v2Score = await judgeRun(v2Run);
 
