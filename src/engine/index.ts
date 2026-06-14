@@ -2,3 +2,4 @@
 // run the synthetic world. Concrete modules are added by their owning agents.
 export * from "./contracts/index.js";
 export * from "./judge.js";
+export * from "./terminal-decision.js";

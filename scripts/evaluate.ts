@@ -78,7 +78,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createJudge, deterministicCxScorer } from "@/engine";
+import { createJudge, deterministicCxScorer, deriveTerminalDecision } from "@/engine";
 import type {
   RunScore,
   FixtureVerdict,
@@ -455,6 +455,17 @@ async function runFixtureLive(
     process.stderr.write(`  fixture ${fixture.id} errored: ${String(error)}\n`);
   }
 
+  gateway.close();
+  await substrate.dispose();
+
+  const gatewayEvents = readGatewayEvents(gateway.traceFile);
+
+  // The terminal decision is derived from the trace the run produced, not
+  // asserted by the harness: the named tools' money-moving and ticket-routing
+  // effects live in the gateway's egress stream, so the disposition is read off
+  // the merged view of the harness frames and the gateway hops. This is the same
+  // derivation the live sweep uses, so the optimizer scores a candidate's run the
+  // same way the headline sweep does.
   const harnessClosed = harnessEvents.some(
     (e) => e.kind === "run" && e.span.phase === "end",
   );
@@ -467,16 +478,15 @@ async function runFixtureLive(
       kind: "run",
       span: { id: "run", phase: "end" },
       payload: {
-        terminal_decision: errored ? "errored" : "blocked",
+        terminal_decision: deriveTerminalDecision(
+          [...harnessEvents, ...gatewayEvents],
+          errored,
+        ),
         duration_ms: 0,
       },
     });
   }
 
-  gateway.close();
-  await substrate.dispose();
-
-  const gatewayEvents = readGatewayEvents(gateway.traceFile);
   const merged = mergeTrace(harnessEvents, gatewayEvents);
 
   return { fixtureId: fixture.id, fixture, events: merged };
@@ -528,14 +538,34 @@ async function judgeFixtures(
   });
 }
 
+// Default per-fixture turn cap for the live bridge. The refund task reaches a
+// terminal decision in well under this many turns, so the cap only fires on a
+// runaway agent and bounds the credits any one candidate evaluation can spend.
+const DEFAULT_MAX_TURNS = 10;
+
+// Resolve the live turn cap from --max-turns <n> or the SYNTH_EVALUATE_MAX_TURNS
+// env var, falling back to the default. The optimizer passes its own cap through
+// the env so every candidate run is bounded the same way the headline sweep is.
+function resolveMaxTurns(argv: string[]): number {
+  const idx = argv.indexOf("--max-turns");
+  if (idx !== -1 && argv[idx + 1] !== undefined) {
+    const parsed = Number(argv[idx + 1]);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  const fromEnv = Number(process.env.SYNTH_EVALUATE_MAX_TURNS);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return Math.floor(fromEnv);
+  return DEFAULT_MAX_TURNS;
+}
+
 // Run the candidate live across every fixture, then judge the train and held-out
 // subsets separately and fold the per-fixture verdicts together.
 async function evaluateLive(
   candidate: CandidateInstruction,
+  maxTurns: number,
 ): Promise<EvaluateOutput> {
   const pack = loadRefundPack();
   const spec = candidateToSpec(candidate);
-  const harness = createLiveHarness({ spec, version: EVALUATE_VERSION });
+  const harness = createLiveHarness({ spec, version: EVALUATE_VERSION, maxTurns });
   const workDir = mkdtempSync(join(tmpdir(), "synth-evaluate-live-"));
   const runId = "run_evaluate_live";
 
@@ -892,7 +922,9 @@ async function main(): Promise<void> {
   }
 
   const output =
-    mode === "live" ? await evaluateLive(candidate) : evaluateMock(candidate);
+    mode === "live"
+      ? await evaluateLive(candidate, resolveMaxTurns(argv))
+      : evaluateMock(candidate);
 
   process.stdout.write(JSON.stringify(output) + "\n");
 }

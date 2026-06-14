@@ -79,7 +79,18 @@ FIXTURE_TICKETS: dict[str, str] = {
 }
 
 
-def build_trainset() -> list[dspy.Example]:
+def build_trainset(single: bool = False) -> list[dspy.Example]:
+    # Each example triggers one full bridge run, and the bridge already scores
+    # every fixture together (train and held-out split internally), so every
+    # example yields the identical regularized score. A single nominal example is
+    # therefore sufficient to drive COPRO and keeps the live run to one bridge call
+    # per candidate; the full per-fixture trainset is available for completeness.
+    if single:
+        return [
+            dspy.Example(
+                ticket="Resolve the refund tickets in the synthetic world."
+            ).with_inputs("ticket")
+        ]
     return [
         dspy.Example(ticket=ticket).with_inputs("ticket")
         for ticket in FIXTURE_TICKETS.values()
@@ -262,7 +273,7 @@ def run_dry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_live(breadth: int, depth: int) -> None:
+def run_live(breadth: int, depth: int, single_eval: bool = False) -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print(
             "ANTHROPIC_API_KEY is not set. The live run needs it for the COPRO "
@@ -273,7 +284,40 @@ def run_live(breadth: int, depth: int) -> None:
 
     print_header("live: Anthropic claude-opus-4-8 proposer + --live bridge")
 
-    dspy.configure(lm=dspy.LM(ANTHROPIC_MODEL))
+    # claude-opus-4-8 accepts only temperature=1. COPRO drives proposer diversity
+    # by sweeping the proposer temperature upward across rounds, which this model
+    # rejects, so let litellm clamp unsupported sampling params instead of raising.
+    # The proposer LM is pinned to the one supported temperature; COPRO still gets
+    # candidate variety from its breadth and its per-round instruction context.
+    import litellm
+
+    litellm.drop_params = True
+    dspy.configure(lm=dspy.LM(ANTHROPIC_MODEL, temperature=1.0, max_tokens=4096))
+
+    # Steer COPRO's proposer toward the regularized objective. COPRO's stock
+    # proposer signature tells the model to "be creative", which pushes it toward
+    # longer, more-rule-laden rewrites, exactly the bloat the length and rule-count
+    # penalties exist to fight. The metric already punishes that, but the proposer
+    # must be told the objective for the search to climb the regularized score
+    # rather than the raw goal-achievement alone. The new objective preserves the
+    # business behavior while demanding the prompt be made as short and as few-rule
+    # as possible, so a proposal that keeps held-out Trust at ceiling while cutting
+    # rules wins on the regularized metric.
+    from dspy.teleprompt import copro_optimizer as _copro
+
+    concise_objective = (
+        "You are an instruction optimizer. Rewrite the given refund-agent "
+        "instruction to be as SHORT and as FEW-RULE as possible while preserving "
+        "its exact business behavior: gather the order, customer, and policy "
+        "before deciding; refund only an eligible request to the original payment "
+        "method; escalate to a human any case outside the window, with repeated "
+        "refund history, or with a chargeback; always reach a terminal state. "
+        "Merge overlapping rules, delete redundant or obvious ones, and aim for at "
+        "most six distinct rules and a few hundred tokens. Prefer pruning over "
+        "adding. Do not introduce new rules or examples."
+    )
+    _copro.BasicGenerateInstruction.__doc__ = concise_objective
+    _copro.GenerateInstructionGivenAttempts.__doc__ = concise_objective
 
     metric = make_metric(live=True)
     student = RefundHarness()
@@ -292,7 +336,7 @@ def run_live(breadth: int, depth: int) -> None:
     )
     optimized = copro.compile(
         student,
-        trainset=build_trainset(),
+        trainset=build_trainset(single=single_eval),
         eval_kwargs={"num_threads": 1, "display_progress": False},
     )
 
@@ -322,12 +366,19 @@ def main() -> None:
     )
     parser.add_argument("--breadth", type=int, default=6, help="COPRO breadth (live).")
     parser.add_argument("--depth", type=int, default=3, help="COPRO depth (live).")
+    parser.add_argument(
+        "--single-eval",
+        action="store_true",
+        help="Score each candidate with one bridge run (one nominal example) "
+        "instead of one per fixture; the bridge judges all fixtures together, so "
+        "this bounds live cost without changing the score.",
+    )
     args = parser.parse_args()
 
     if args.dry_run:
         run_dry()
     else:
-        run_live(args.breadth, args.depth)
+        run_live(args.breadth, args.depth, single_eval=args.single_eval)
 
 
 if __name__ == "__main__":

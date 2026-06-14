@@ -38,7 +38,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createJudge, deterministicCxScorer } from "@/engine";
+import { createJudge, deterministicCxScorer, deriveTerminalDecision } from "@/engine";
 import type {
   RunScore,
   TraceEvent,
@@ -219,6 +219,18 @@ async function runFixtureLive(
     console.error(`  fixture ${fixture.id} errored: ${String(error)}`);
   }
 
+  gateway.close();
+  await substrate.dispose();
+
+  const gatewayEvents = readGatewayEvents(gateway.traceFile);
+
+  // The terminal decision is a property of what the run did to the world, read
+  // off the trace the run produced rather than asserted by the harness. The
+  // money-moving and ticket-routing hops live in the gateway's egress stream, so
+  // the decision is derived from the merged view of the harness frames and the
+  // gateway hops: a successful refund is "refunded", a ticket routed to pending
+  // is "escalated", a clean run that did neither is "blocked", and a harness
+  // that threw is "errored".
   const harnessClosed = harnessEvents.some(
     (e) => e.kind === "run" && e.span.phase === "end",
   );
@@ -231,16 +243,15 @@ async function runFixtureLive(
       kind: "run",
       span: { id: "run", phase: "end" },
       payload: {
-        terminal_decision: errored ? "errored" : "blocked",
+        terminal_decision: deriveTerminalDecision(
+          [...harnessEvents, ...gatewayEvents],
+          errored,
+        ),
         duration_ms: 0,
       },
     });
   }
 
-  gateway.close();
-  await substrate.dispose();
-
-  const gatewayEvents = readGatewayEvents(gateway.traceFile);
   const merged = mergeTrace(harnessEvents, gatewayEvents);
 
   return { fixtureId: fixture.id, fixture, events: merged };
@@ -382,6 +393,49 @@ function parseMaxTurns(argv: string[]): number | undefined {
   return undefined;
 }
 
+// A comma-separated subset of fixture ids to run, for a cost-bounded live smoke.
+// Omitted runs the full pack.
+function parseFixtureFilter(argv: string[]): string[] | undefined {
+  const idx = argv.indexOf("--fixtures");
+  if (idx !== -1 && argv[idx + 1] !== undefined) {
+    return argv[idx + 1]!.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return undefined;
+}
+
+// A comma-separated subset of harness versions to run (v1, v2). Omitted runs
+// both, the headline naive-vs-tightened comparison.
+function parseVersionFilter(argv: string[]): Array<"v1" | "v2"> {
+  const idx = argv.indexOf("--versions");
+  if (idx !== -1 && argv[idx + 1] !== undefined) {
+    const set = new Set(argv[idx + 1]!.split(",").map((s) => s.trim()));
+    const out = (["v1", "v2"] as const).filter((v) => set.has(v));
+    if (out.length > 0) return out;
+  }
+  return ["v1", "v2"];
+}
+
+// A single-run dashboard for a cost-bounded smoke that ran only one version.
+function printSingleDashboard(score: RunScore): void {
+  console.log("");
+  console.log(
+    `  Synthetic Harness Lab: live smoke (${score.harness_version}, real shell + HTTP)`,
+  );
+  console.log(`    Technical pass:  ${pct(score.technical_pass_rate)}`);
+  console.log(`    Cash Burned:     ${dollars(score.cash_burned_cents)}`);
+  console.log(`    Trust Score:     ${score.trust_score.toFixed(0)}`);
+  console.log("");
+  console.log("  Per-fixture verdicts:");
+  for (const verdict of score.fixture_verdicts) {
+    const tags =
+      verdict.failure_tags.length > 0 ? verdict.failure_tags.join(", ") : "none";
+    console.log(
+      `    ${pad(verdict.fixture_id, 22)} ${pad(dollars(verdict.dollar_impact_cents), 12)} correct=${verdict.correct} [${tags}]`,
+    );
+  }
+  console.log("");
+}
+
 // The friendly no-key exit. The live path is the only one that needs a model
 // credential; without one this prints where the keyless proofs live and returns
 // false so main() exits 0 without ever calling the API.
@@ -407,8 +461,26 @@ async function main(): Promise<void> {
   const tracesDir = parseTracesDir(argv);
   const maxTurns = parseMaxTurns(argv);
   const personas = argv.includes("--personas");
+  const fixtureFilter = parseFixtureFilter(argv);
+  const versions = parseVersionFilter(argv);
   const pack = loadRefundPack();
   const workDir = mkdtempSync(join(tmpdir(), "synth-sweep-live-"));
+
+  const fixtures =
+    fixtureFilter === undefined
+      ? pack.fixtures
+      : pack.fixtures.filter((f) => fixtureFilter.includes(f.id));
+  if (fixtures.length === 0) {
+    console.log("  no fixtures matched the --fixtures filter; nothing to run.");
+    return;
+  }
+  if (fixtureFilter !== undefined || versions.length < 2) {
+    console.log(
+      `  cost-bounded smoke: versions=${versions.join(",")} fixtures=${fixtures
+        .map((f) => f.id)
+        .join(",")}` + (maxTurns !== undefined ? ` maxTurns=${maxTurns}` : ""),
+    );
+  }
 
   if (personas) {
     console.log(
@@ -419,27 +491,31 @@ async function main(): Promise<void> {
   // The live harnesses are built from the same pinned specs the gates validate:
   // v1 is rule-silent, v2 is the tightened spec. Construction is keyless; the
   // model is only called inside run(), already credential-guarded above.
-  const liveV1 = createLiveHarness({
-    spec: loadPinnedRefundSpec("v1"),
-    version: "v1",
-    ...(maxTurns !== undefined ? { maxTurns } : {}),
-  });
-  const liveV2 = createLiveHarness({
-    spec: loadPinnedRefundSpec("v2"),
-    version: "v2",
-    ...(maxTurns !== undefined ? { maxTurns } : {}),
-  });
+  const scores: Partial<Record<"v1" | "v2", RunScore>> = {};
+  for (const version of versions) {
+    const harness = createLiveHarness({
+      spec: loadPinnedRefundSpec(version),
+      version,
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
+    });
+    const run = await sweepLive(
+      `run_${version}_live`,
+      harness,
+      fixtures,
+      workDir,
+      personas,
+    );
+    writeTraces(tracesDir, run);
+    scores[version] = await judgeRun(run);
+  }
 
-  const v1Run = await sweepLive("run_v1_live", liveV1, pack.fixtures, workDir, personas);
-  writeTraces(tracesDir, v1Run);
-  const v1Score = await judgeRun(v1Run);
-
-  const v2Run = await sweepLive("run_v2_live", liveV2, pack.fixtures, workDir, personas);
-  writeTraces(tracesDir, v2Run);
-  const v2Score = await judgeRun(v2Run);
-
-  printDashboard(v1Score, v2Score);
-  console.log(`  Traces written to ${tracesDir}/run_v1_live and ${tracesDir}/run_v2_live`);
+  if (scores.v1 !== undefined && scores.v2 !== undefined) {
+    printDashboard(scores.v1, scores.v2);
+  } else {
+    const only = scores.v1 ?? scores.v2;
+    if (only !== undefined) printSingleDashboard(only);
+  }
+  console.log(`  Traces written under ${tracesDir}`);
   console.log("");
 }
 

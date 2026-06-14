@@ -41,3 +41,4 @@ py/**/.venv/
 **/__pycache__/
 *.pyc
 py/**/out/
+traces-live-smoke/

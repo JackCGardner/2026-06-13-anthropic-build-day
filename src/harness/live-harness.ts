@@ -223,9 +223,12 @@ async function runLive(
 function defineBashTool(bash: BashTool) {
   return tool(
     BASH_TOOL_NAME,
-    "Run a shell command inside the support agent's sandbox. Use it to call the " +
-      "ticketing, orders, customer, policy, and billing APIs over HTTP (for " +
-      "example with curl). Returns the command's stdout, stderr, and exit code.",
+    "Run a shell command inside the support agent's sandbox for genuine " +
+      "computation, such as date math when checking a refund window. Prefer the " +
+      "named tools (get_ticket, lookup_order, lookup_customer, read_policy, " +
+      "issue_refund, escalate_to_human) for talking to the services; reach for " +
+      "the shell only when a real calculation is required. Returns the command's " +
+      "stdout, stderr, and exit code.",
     {
       command: z
         .string()
@@ -272,10 +275,12 @@ function formatToolResult(exitCode: number, body: string): string {
 function buildTaskPrompt(spec: HarnessSpec, fixture: Fixture): string {
   const lines: string[] = [];
   lines.push(
-    "Resolve the following support ticket. Use the bash tool to call the APIs " +
-      "you need; the billing API is at " +
-      spec.billing_base_url +
-      ".",
+    "Resolve the following support ticket. You have named tools for every step: " +
+      "get_ticket, lookup_order, lookup_customer, read_policy, issue_refund, and " +
+      "escalate_to_human. Call those tools directly; they reach the live services " +
+      "for you, so you never need to hand-write HTTP or curl. Reach a terminal " +
+      "decision: either issue_refund when the refund is clearly allowed, or " +
+      "escalate_to_human to route the ticket to a person when it is not.",
   );
   if (spec.procedure.length > 0) {
     lines.push("");
