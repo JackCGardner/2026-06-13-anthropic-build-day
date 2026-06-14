@@ -11,6 +11,7 @@ import {
   type LoanScenarioPack,
   type LoanSplits,
   type PopulationStats,
+  type ProtectedClass,
   LoanScenarioPackSchema,
 } from "./schema.js";
 import { LOAN_PACK_ID, LOAN_BRIEF } from "./brief.js";
@@ -44,6 +45,9 @@ function buildSplits(
   evalSampleSize: number,
 ): LoanSplits {
   const ids = applicants.map((a) => a.applicant_id);
+  const groupOf = new Map<string, ProtectedClass>(
+    applicants.map((a) => [a.applicant_id, a.application.protected_class]),
+  );
 
   // Held-out is every k-th applicant across the tier-ordered sequence, so it
   // draws proportionally from every tier and both groups rather than clustering
@@ -62,16 +66,52 @@ function buildSplits(
   });
 
   // The eval sample is a representative slice of the TRAIN split (the optimizer
-  // never sees held-out during its inner loop), spread by a stride so it spans
-  // tiers and groups instead of taking a contiguous block.
+  // never sees held-out during its inner loop). The population alternates the two
+  // groups strictly across the tier order, so a single fixed stride can alias
+  // onto one group and leave the sample group-degenerate, which collapses the
+  // fair-lending signal the judge depends on. To keep both groups present at any
+  // sample size, the two groups are sampled independently each by its own stride
+  // and then interleaved, so the eval sample spans tiers AND carries both groups
+  // proportionally. The selection is still fully deterministic.
   const clampedSize = Math.max(1, Math.min(evalSampleSize, train.length));
-  const evalStride = Math.max(1, Math.floor(train.length / clampedSize));
-  const evalSample: string[] = [];
-  for (let i = 0; i < train.length && evalSample.length < clampedSize; i += evalStride) {
-    evalSample.push(train[i]!);
-  }
+  const trainByGroup = (target: ProtectedClass): string[] =>
+    train.filter((id) => groupOf.get(id) === target);
+  const groupA = trainByGroup("group_a");
+  const groupB = trainByGroup("group_b");
 
-  return { train, held_out: heldOut, eval_sample: evalSample };
+  // Split the budget across the groups in proportion to their presence in train,
+  // giving each group at least one slot when train carries it, so neither group
+  // can be sampled away.
+  const targetA =
+    groupA.length === 0
+      ? 0
+      : Math.max(1, Math.round((clampedSize * groupA.length) / train.length));
+  const targetB = Math.max(0, clampedSize - targetA);
+
+  const pickEvenly = (pool: string[], want: number): string[] => {
+    if (want <= 0 || pool.length === 0) return [];
+    const take = Math.min(want, pool.length);
+    const stride = Math.max(1, Math.floor(pool.length / take));
+    const picked: string[] = [];
+    for (let i = 0; i < pool.length && picked.length < take; i += stride) {
+      picked.push(pool[i]!);
+    }
+    return picked;
+  };
+
+  const pickedA = pickEvenly(groupA, targetA);
+  const pickedB = pickEvenly(groupB, Math.min(targetB, groupB.length));
+
+  // Interleave the two group picks so the eval sample alternates groups, matching
+  // the population's own layout, then trim to the requested size.
+  const evalSample: string[] = [];
+  for (let i = 0; i < Math.max(pickedA.length, pickedB.length); i += 1) {
+    if (i < pickedA.length) evalSample.push(pickedA[i]!);
+    if (i < pickedB.length) evalSample.push(pickedB[i]!);
+  }
+  const evalSampleSized = evalSample.slice(0, clampedSize);
+
+  return { train, held_out: heldOut, eval_sample: evalSampleSized };
 }
 
 // Compute the population statistics from the applicants and the split. These are
