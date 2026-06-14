@@ -1,0 +1,16 @@
+[project]
+name = "dspy-optimizer"
+version = "0.1.0"
+description = "DSPy instruction optimizer for the refund-resolution harness, scored through the TS evaluate bridge."
+requires-python = ">=3.10"
+dependencies = [
+    "dspy-ai>=3.0.0",
+    "anthropic>=0.40.0",
+]
+
+[tool.setuptools]
+packages = ["dspy_optimizer"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

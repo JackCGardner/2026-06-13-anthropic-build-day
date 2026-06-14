@@ -37,3 +37,7 @@ traces-live/
 traces-opt/
 traces-optimize/
 traces-optimizer/
+py/**/.venv/
+**/__pycache__/
+*.pyc
+py/**/out/
