@@ -20,6 +20,12 @@ build/
 # Generated sweep artifacts
 traces/
 
+# Generated population / loan dumps (the seeded population is reproduced in
+# memory by the loader; any persisted dump is an artifact, not source)
+generated-population/
+*.population.json
+loan-traces/
+
 # Next.js / TypeScript / tooling
 .next/
 out/
@@ -42,3 +48,5 @@ py/**/.venv/
 *.pyc
 py/**/out/
 traces-live-smoke/
+traces-loan/
+traces-loan-smoke/

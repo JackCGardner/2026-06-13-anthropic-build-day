@@ -31,6 +31,34 @@ export {
   toStructuredSpec,
   loadStructuredSpec,
 } from "./structured-spec.js";
+
+// The loan harness surface: the optimizable loan underwriting spec, the loan
+// function tools, and the live loan harness. It is the second pack's harness
+// alongside the refund harness above, sharing the same live-harness credential
+// guard and trace conventions.
+export {
+  LoanHarnessSpecSchema,
+  LoanToolManifestEntrySchema,
+  loadLoanHarnessSpec,
+  LOAN_TOOL_MANIFEST,
+  LOAN_HARNESS_MODEL,
+  LOAN_SEED_SYSTEM_PROMPT,
+  LOAN_SEED_PROCEDURE,
+  LOAN_SUCCESS_CRITERION,
+  LOAN_HARNESS_SPEC_SEED,
+  buildLoanFunctionTools,
+  loanQualifiedToolName,
+  LOAN_FUNCTION_TOOL_SERVER_NAME,
+  LOAN_DECISION_KEY_PREFIX,
+  createLiveLoanHarness,
+} from "./loan/index.js";
+export type {
+  LoanHarnessSpec,
+  LoanToolManifestEntry,
+  BuiltLoanFunctionTool,
+  LiveLoanHarness,
+  LiveLoanHarnessOptions,
+} from "./loan/index.js";
 export type {
   Gate,
   GateLookup,

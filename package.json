@@ -18,7 +18,9 @@
     "sweep:live": "tsx scripts/sweep-live.ts",
     "sweep:sandbox": "tsx scripts/sweep-sandbox.ts",
     "optimize": "tsx scripts/optimize.ts",
+    "optimize:loan": "tsx scripts/optimize-loan.ts",
     "evaluate": "tsx scripts/evaluate.ts",
+    "evaluate:loan": "tsx scripts/evaluate-loan.ts",
     "poke": "tsx scripts/poke-tool.ts",
     "shell": "tsx scripts/shell.ts"
   },
